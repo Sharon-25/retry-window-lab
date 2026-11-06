@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "retry-window-lab"
+version = "0.1.0"
+description = "Distributed task execution across expiring idempotency windows"
+requires-python = ">=3.12"
+dependencies = [
+    "psycopg[binary]>=3.2,<4",
+    "redis>=5,<9",
+    "python-dotenv>=1,<2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8,<10",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "integration: requires running PostgreSQL and Redis",
+]

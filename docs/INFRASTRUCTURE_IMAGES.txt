@@ -1,0 +1,2 @@
+[postgres:17-bookworm] [postgres@sha256:665dc7b37ac52a17e298511414c21d23ffa4e6a6ef6225b3e5d59c7afb35e994]
+[redis:7.4-alpine] [redis@sha256:c5d34a98396a4775e223c74e929162c35c5a2182901ba26b50ade939941ce14b]
