@@ -1,12 +1,12 @@
 import json
 
-from retry_window_lab.config import postgres_conninfo
+from retry_window_lab.runtime_config import application_conninfo
 from retry_window_lab.domain import TaskDefinition
 from retry_window_lab.storage import TaskRepository
 
 
 def main() -> None:
-    conninfo = postgres_conninfo()
+    conninfo = application_conninfo()
     definition = TaskDefinition("checksum", "durable-checksum-demo-001", {"text": "abc"})
     first = TaskRepository(conninfo).submit(definition)
     second = TaskRepository(conninfo).submit(definition)

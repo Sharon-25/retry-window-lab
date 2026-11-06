@@ -67,3 +67,17 @@
 - Verified: manual demonstration completed eight tasks with eight attempts.
 - Implementation and verification complete; remote synchronization is checked
   after pushing the milestone commit.
+
+## Phase 6 — Provider simulator and isolation
+
+- Verified: separate provider schema and versioned migration ledger.
+- Verified: restricted application/provider roles and cross-schema denial.
+- Verified: atomic reservations, stock consistency and protected-key conflicts.
+- Verified: finite protection expiry with retained reservation history.
+- Verified: authoritative, delayed and unavailable lookup profiles.
+- Verified: controlled provider time and one-shot failure injection.
+- Verified: post-commit response loss and delayed original-request commitment.
+- Verified: 273 tests passed on Ubuntu / WSL2.
+- Verified: live HTTP demonstration passed all six behavior checks.
+- Implementation and verification complete; remote synchronization is checked
+  after pushing the milestone commit.

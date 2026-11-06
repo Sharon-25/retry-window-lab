@@ -9,7 +9,8 @@ from psycopg import sql
 from redis import Redis
 from redis.exceptions import RedisError
 
-from retry_window_lab.config import postgres_conninfo, redis_url
+from retry_window_lab.config import redis_url
+from retry_window_lab.runtime_config import application_conninfo
 from retry_window_lab.db import DEFAULT_SCHEMA, connect, table, validate_schema
 
 
@@ -84,7 +85,7 @@ def main() -> None:
         redis_url(), decode_responses=True,
         socket_connect_timeout=2, socket_timeout=2,
     ) as client:
-        dispatcher = OutboxDispatcher(postgres_conninfo(), client)
+        dispatcher = OutboxDispatcher(application_conninfo(), client)
         try:
             while True:
                 try:

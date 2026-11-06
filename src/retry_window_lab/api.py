@@ -6,7 +6,7 @@ from fastapi import Depends, FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from retry_window_lab.config import postgres_conninfo
+from retry_window_lab.runtime_config import application_conninfo
 from retry_window_lab.domain import TaskDefinition
 from retry_window_lab.local import SubmissionConflict
 from retry_window_lab.storage import TaskRepository
@@ -23,7 +23,7 @@ def create_app(repository: TaskRepository | None = None) -> FastAPI:
     application = FastAPI(title="Retry Window Lab", version="0.1.0")
 
     def get_repository() -> TaskRepository:
-        return repository if repository is not None else TaskRepository(postgres_conninfo())
+        return repository if repository is not None else TaskRepository(application_conninfo())
 
     Repository = Annotated[TaskRepository, Depends(get_repository)]
 

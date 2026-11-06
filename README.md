@@ -13,12 +13,12 @@ provider's idempotency protection expires.
 
 ## Current status
 
-Phase 5: independent checksum workers, durable attempts, PostgreSQL leases,
-heartbeat renewal and stale completion rejection implemented and verified.
+Phase 6: provider simulation, finite idempotency protection, lookup profiles,
+controlled failures and restricted database roles implemented and verified.
 
-201 tests passed: 142 unit tests and 59 integration tests.
-The manual demonstration verified eight successful tasks and eight attempts.
-Provider simulation and provider-aware recovery follow.
+273 tests passed: 175 unit tests and 98 integration tests.
+The HTTP demonstration passed all six provider behavior checks.
+Worker-to-provider integration and recovery policies follow in Phase 7.
 
 ## Local setup
 
@@ -33,6 +33,7 @@ Create .env from .env.example and replace the placeholder password before
 first database initialization.
 
     docker compose up -d --wait --wait-timeout 120
+    python -m retry_window_lab.provision
     python -m pytest -q
 
 ## Useful commands
@@ -96,3 +97,20 @@ Publish accepted work using the dispatcher. Scan expired attempts manually:
 
 Expired attempts become uncertain and require review.
 See docs/WORKERS.md for ownership, acknowledgement and recovery behavior.
+
+## Provider simulator
+
+Provision storage and restricted runtime credentials before starting services:
+
+    python -m retry_window_lab.provision
+
+Start the provider:
+
+    python -m uvicorn retry_window_lab.provider_api:app --host 127.0.0.1 --port 8001
+
+Run the demonstration from another terminal:
+
+    python -m retry_window_lab.provider_demo
+
+The demonstration intentionally creates duplicate effects after protection
+expires. See docs/PROVIDER_SIMULATOR.md for contracts and limitations.

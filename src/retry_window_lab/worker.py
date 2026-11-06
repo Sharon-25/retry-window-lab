@@ -9,7 +9,8 @@ import psycopg
 from redis import Redis
 from redis.exceptions import RedisError, ResponseError
 
-from retry_window_lab.config import postgres_conninfo, redis_url
+from retry_window_lab.config import redis_url
+from retry_window_lab.runtime_config import application_conninfo
 from retry_window_lab.dispatcher import READY_STREAM
 from retry_window_lab.domain import canonical_json
 from retry_window_lab.local import KnownTaskFailure, checksum_handler
@@ -121,7 +122,7 @@ def main():
     parser.add_argument('--once', action='store_true', help='Handle at most one notification')
     parser.add_argument('--lease-seconds', type=int, default=30)
     args = parser.parse_args()
-    repository = OwnershipRepository(postgres_conninfo())
+    repository = OwnershipRepository(application_conninfo())
     try:
         with Redis.from_url(redis_url(), decode_responses=True,
                             socket_connect_timeout=2, socket_timeout=2) as client:
