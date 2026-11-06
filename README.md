@@ -13,8 +13,10 @@ provider's idempotency protection expires.
 
 ## Current status
 
-Phase 2: environment setup and infrastructure integration tests verified.
-Task execution and recovery policies are not implemented yet.
+Phase 3: validated task definitions, lifecycle rules, attempt records and
+local checksum execution implemented and verified.
+77 unit tests and 2 infrastructure integration tests pass.
+Durable submission, distributed execution and recovery policies follow.
 
 ## Local setup
 
@@ -54,3 +56,9 @@ Compose tags select a release series and may receive updates.
 ## Specification
 
 See docs/RETRY_WINDOW_LAB_SPEC.md.
+
+## Local demonstration
+
+    python -m retry_window_lab.demo
+
+See docs/LOCAL_EXECUTION.md for behavior and limitations.

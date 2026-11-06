@@ -22,3 +22,16 @@
 - Worker leases and stale-attempt rejection.
 - Recovery decisions across provider protection expiry.
 - Controlled failure experiments and policy comparisons.
+
+## Phase 3 — Task model and local execution
+
+- Verified: payload validation and stable fingerprints.
+- Verified: lifecycle transition rules and immutable payload snapshots.
+- Verified: task, operation and attempt identities.
+- Verified: handler registration and local checksum execution.
+- Verified: matching resubmission reuse and conflicting submission rejection.
+- Verified: known failure and uncertain-outcome classification.
+- Verified: 77 unit tests and 79 total tests passed on Ubuntu / WSL2.
+- Verified: checksum demonstration and unchanged dependency requirements.
+- Implementation and verification complete; Git synchronization is checked
+  after pushing the milestone commit.
