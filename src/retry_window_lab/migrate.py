@@ -67,7 +67,68 @@ CREATE TABLE attempts (
 CREATE INDEX tasks_expired_lease_idx ON tasks(lease_until) WHERE state = 'RUNNING';
 """
 
-MIGRATIONS = ((1, INITIAL_SQL), (2, WORKER_SQL))
+RECOVERY_SQL = """
+ALTER TABLE tasks ADD COLUMN mutation_attempts INTEGER NOT NULL DEFAULT 0 CHECK(mutation_attempts BETWEEN 0 AND 3);
+ALTER TABLE tasks ADD COLUMN observation_count INTEGER NOT NULL DEFAULT 0 CHECK(observation_count BETWEEN 0 AND 5);
+ALTER TABLE tasks ADD COLUMN retry_due_at TIMESTAMPTZ;
+ALTER TABLE tasks ADD COLUMN recovery_due_at TIMESTAMPTZ;
+ALTER TABLE attempts ADD COLUMN purpose TEXT NOT NULL DEFAULT 'EXECUTION' CHECK(purpose IN ('EXECUTION','RECONCILIATION'));
+ALTER TABLE attempts DROP CONSTRAINT attempts_error_code_check;
+ALTER TABLE attempts ADD CONSTRAINT attempts_error_code_check CHECK(error_code IS NULL OR error_code IN (
+    'KNOWN_PERMANENT_FAILURE','UNEXPECTED_HANDLER_ERROR','LEASE_EXPIRED',
+    'PROVIDER_UNKNOWN','LOOKUP_INCONCLUSIVE','PERMANENT_REJECTION','SETTLED_NO_EFFECT',
+    'PROVIDER_CONFLICT','DUPLICATE_EFFECT','INVALID_EVIDENCE','EVIDENCE_EXHAUSTED'
+));
+CREATE TABLE provider_context (
+    task_id UUID PRIMARY KEY REFERENCES tasks(task_id) ON DELETE CASCADE,
+    experiment_id UUID NOT NULL,
+    provider_url TEXT NOT NULL,
+    profile TEXT NOT NULL CHECK(profile IN ('authoritative','delayed','unavailable')),
+    profile_version INTEGER NOT NULL CHECK(profile_version=1),
+    window_seconds INTEGER NOT NULL CHECK(window_seconds BETWEEN 1 AND 3600),
+    first_dispatch_at TIMESTAMPTZ,
+    accepted_provider_at BIGINT,
+    protection_expires_at BIGINT
+);
+CREATE TABLE provider_dispatches (
+    dispatch_id UUID PRIMARY KEY,
+    task_id UUID NOT NULL REFERENCES tasks(task_id) ON DELETE CASCADE,
+    attempt_id UUID NOT NULL UNIQUE REFERENCES attempts(attempt_id),
+    lease_token BIGINT NOT NULL,
+    request_body JSONB NOT NULL CHECK(jsonb_typeof(request_body)='object'),
+    started_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+    settled_no_effect BOOLEAN NOT NULL DEFAULT FALSE
+);
+CREATE TABLE provider_observations (
+    observation_id UUID PRIMARY KEY,
+    task_id UUID NOT NULL REFERENCES tasks(task_id) ON DELETE CASCADE,
+    attempt_id UUID NOT NULL REFERENCES attempts(attempt_id),
+    source TEXT NOT NULL CHECK(source IN ('MUTATION','LOOKUP')),
+    received_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+    http_status INTEGER,
+    error_code TEXT,
+    body JSONB CHECK(body IS NULL OR jsonb_typeof(body)='object')
+);
+CREATE TABLE recovery_decisions (
+    decision_id UUID PRIMARY KEY,
+    task_id UUID NOT NULL REFERENCES tasks(task_id) ON DELETE CASCADE,
+    attempt_id UUID REFERENCES attempts(attempt_id),
+    observation_id UUID REFERENCES provider_observations(observation_id),
+    policy_version INTEGER NOT NULL DEFAULT 1 CHECK(policy_version=1),
+    reason TEXT NOT NULL CHECK(reason IN (
+        'EFFECT_CONFIRMED','PERMANENT_REJECTION','SETTLED_NO_EFFECT',
+        'DISPATCH_NOT_STARTED','PROVIDER_UNKNOWN','LOOKUP_INCONCLUSIVE',
+        'EVIDENCE_EXHAUSTED','MUTATION_BUDGET_EXHAUSTED','PROVIDER_CONFLICT',
+        'DUPLICATE_EFFECT','INVALID_EVIDENCE','LEASE_EXPIRED'
+    )),
+    details JSONB NOT NULL DEFAULT '{}' CHECK(jsonb_typeof(details)='object'),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+);
+CREATE INDEX tasks_recovery_due_idx ON tasks(recovery_due_at) WHERE state='RECONCILING';
+CREATE INDEX tasks_retry_due_idx ON tasks(retry_due_at) WHERE state='RETRY_WAIT';
+"""
+
+MIGRATIONS = ((1, INITIAL_SQL), (2, WORKER_SQL), (3, RECOVERY_SQL))
 
 
 def migrate(conninfo: str, schema: str = DEFAULT_SCHEMA) -> list[int]:

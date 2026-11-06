@@ -66,6 +66,20 @@ def execute_claim(repository, claim, lease_seconds, handler=checksum_handler):
     return outcome if repository.finish(claim, outcome, result) else 'stale_completion'
 
 
+def execute_reservation(repository,claim,lease_seconds):
+    from retry_window_lab.provider_client import ProviderClient
+    from retry_window_lab.recovery import RecoveryRepository
+    recovery=RecoveryRepository(repository.conninfo,repository.schema)
+    with LeaseHeartbeat(repository,claim,lease_seconds) as heartbeat:
+        dispatch=recovery.begin_dispatch(claim)
+        if dispatch is None:
+            return 'dispatch_not_started'
+        reply=ProviderClient(dispatch.context['provider_url']).reserve(dispatch.body)
+    if heartbeat.lost.is_set():
+        return 'ownership_lost'
+    return recovery.complete_mutation(claim,dispatch,reply)
+
+
 class Worker:
     def __init__(self, repository, client, worker_id, stream=READY_STREAM,
                  group=GROUP, lease_seconds=30, reclaim_ms=60000):
@@ -112,7 +126,9 @@ class Worker:
         # A claim or durable representation is committed before acknowledgement.
         self.client.xack(self.stream, self.group, message_id)
         if claim is not None:
-            status = execute_claim(self.repository, claim, self.lease_seconds)
+            status = (execute_reservation(self.repository, claim, self.lease_seconds)
+                      if claim.definition.kind.value == 'reserve_inventory'
+                      else execute_claim(self.repository, claim, self.lease_seconds))
         return {'event': 'worker', 'status': status, 'task_id': str(notification.task_id)}
 
 
@@ -123,6 +139,9 @@ def main():
     parser.add_argument('--lease-seconds', type=int, default=30)
     args = parser.parse_args()
     repository = OwnershipRepository(application_conninfo())
+    from retry_window_lab.recovery import RecoveryRepository,RecoveryService
+    recovery_repository=RecoveryRepository(repository.conninfo)
+    recovery_service=RecoveryService(recovery_repository,worker_id=args.worker_id)
     try:
         with Redis.from_url(redis_url(), decode_responses=True,
                             socket_connect_timeout=2, socket_timeout=2) as client:
@@ -134,6 +153,10 @@ def main():
                     expired = repository.expire()
                     if expired:
                         print(json.dumps({'event': 'expired_attempts', 'count': expired}), flush=True)
+                    scheduled=recovery_repository.schedule_due()
+                    reconciled=recovery_service.run_once()
+                    if scheduled or reconciled!='idle':
+                        print(json.dumps({'event':'recovery','scheduled':scheduled,'status':reconciled}),flush=True)
                     report = worker.tick()
                     if args.once or report['status'] != 'idle':
                         print(json.dumps(report), flush=True)

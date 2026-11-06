@@ -81,13 +81,18 @@ class OwnershipRepository:
             definition = TaskDefinition(row['kind'], row['submission_key'], row['payload'])
             if definition.fingerprint != row['fingerprint']:
                 raise RuntimeError('Stored fingerprint mismatch')
-            # Phase 5 deliberately provides no external-effect handler.
-            if definition.kind.value != 'checksum':
-                return 'unsupported', None
+            if definition.kind.value == 'reserve_inventory':
+                context = c.execute(sql.SQL('SELECT 1 FROM {} WHERE task_id=%s')
+                                    .format(self._table('provider_context')), (notification.task_id,)).fetchone()
+                if not context:
+                    return 'unsupported', None
+                if row['mutation_attempts'] >= 3:
+                    return 'unsupported', None
             attempt_id = uuid4()
             token = row['lease_token'] + 1
             c.execute(sql.SQL('''UPDATE {} SET state='RUNNING',lease_token=%s,
                 active_attempt_id=%s,attempt_count=attempt_count+1,
+                mutation_attempts=mutation_attempts+CASE WHEN kind='reserve_inventory' THEN 1 ELSE 0 END,
                 lease_until=clock_timestamp()+(%s * interval '1 second'),
                 updated_at=clock_timestamp() WHERE task_id=%s''').format(self._table('tasks')),
                 (token, attempt_id, lease_seconds, notification.task_id))
@@ -100,7 +105,7 @@ class OwnershipRepository:
         # Recheck expiration AFTER obtaining the row lock, using database time.
         row = c.execute(sql.SQL('SELECT * FROM {} WHERE task_id=%s FOR UPDATE')
                         .format(self._table('tasks')), (claim.task_id,)).fetchone()
-        if (row is None or row['state'] != 'RUNNING'
+        if (row is None or row['state'] not in ('RUNNING','RECONCILING')
                 or row['lease_token'] != claim.token
                 or row['active_attempt_id'] != claim.attempt_id):
             return False
@@ -149,12 +154,17 @@ class OwnershipRepository:
         bounded_int(limit, 1, 1000, 'limit')
         count = 0
         with connect(self.conninfo) as c, c.transaction():
-            rows = c.execute(sql.SQL('''SELECT task_id FROM {} WHERE state='RUNNING'
-                AND lease_until <= clock_timestamp() ORDER BY lease_until,task_id
+            rows = c.execute(sql.SQL('''SELECT task_id FROM {} WHERE state IN ('RUNNING','RECONCILING')
+                AND active_attempt_id IS NOT NULL AND lease_until <= clock_timestamp() ORDER BY lease_until,task_id
                 LIMIT %s FOR UPDATE SKIP LOCKED''').format(self._table('tasks')), (limit,)).fetchall()
             for row in rows:
                 task = c.execute(sql.SQL('SELECT * FROM {} WHERE task_id=%s')
                                  .format(self._table('tasks')), (row['task_id'],)).fetchone()
+                if task['kind'] == 'reserve_inventory':
+                    from retry_window_lab.recovery import RecoveryRepository
+                    if RecoveryRepository(self.conninfo, self.schema).expire_locked(c, task):
+                        count += 1
+                        continue
                 # A lease expiration establishes uncertainty, never business failure.
                 cursor = c.execute(sql.SQL('''UPDATE {} SET outcome='UNKNOWN',error_code='LEASE_EXPIRED',
                     finished_at=clock_timestamp() WHERE attempt_id=%s AND outcome='RUNNING' ''')

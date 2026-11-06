@@ -81,3 +81,18 @@
 - Verified: live HTTP demonstration passed all six behavior checks.
 - Implementation and verification complete; remote synchronization is checked
   after pushing the milestone commit.
+
+## Phase 7 — Reservation execution and recovery
+
+- Verified: migration 3 and restricted-role grants for recovery storage.
+- Verified: immutable provider context and atomic readiness publication.
+- Verified: guarded dispatch records and reservation worker execution.
+- Verified: persisted provider observations and versioned decisions.
+- Verified: reconciliation after uncertain outcomes.
+- Verified: retries require proven no-effect evidence.
+- Verified: execution/observation budgets and durable retry deadlines.
+- Verified: concurrent scanners, scheduler rollback and stale-result rejection.
+- Verified: 351 tests passed on Ubuntu / WSL2.
+- Verified: six HTTP recovery scenarios with one observed effect per operation.
+- Implementation and verification complete; remote synchronization is checked
+  after pushing the milestone commit.

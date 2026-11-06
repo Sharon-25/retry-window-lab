@@ -188,10 +188,10 @@ and visibility boundaries, conflicting protected payloads, late original
 requests, one-shot faults, post-commit response loss, concurrent deduplication,
 stock consistency, atomic rollback, fresh experiment stock and database roles.
 
-Queue workers continue to execute checksum tasks. Reservation-to-provider
-execution, durable observations, evidence-based decisions, retry scheduling and
-comparative policies follow in Phase 7. Phase 6 does not automatically retry an
-ambiguous operation or claim exactly-once external execution.
+Phase 7 adds reservation execution, durable observations, evidence-based
+decisions and retry scheduling. See RECOVERY.md for the current recovery
+contract. Controlled policy comparisons remain planned for a later phase.
+No exactly-once external execution is claimed.
 
 The provider is an unauthenticated localhost experiment service. Keep it bound
 to loopback. Provider controls and inspection are trusted test tools; this phase

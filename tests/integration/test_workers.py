@@ -329,7 +329,7 @@ def test_upgrade_from_phase4_preserves_tasks_and_outbox(environment, monkeypatch
         assert module.migrate(conninfo, old_schema) == [1]
         task = TaskRepository(conninfo, old_schema).submit(TaskDefinition('checksum', 'upgrade', {'text': 'abc'})).task
         monkeypatch.setattr(module, 'MIGRATIONS', versions)
-        assert module.migrate(conninfo, old_schema) == [2]
+        assert module.migrate(conninfo, old_schema) == [version for version, _ in versions[1:]]
         assert module.migrate(conninfo, old_schema) == []
         assert TaskRepository(conninfo, old_schema).get(task.task_id).as_dict() == task.as_dict()
         with connect(conninfo) as c:

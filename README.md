@@ -13,12 +13,12 @@ provider's idempotency protection expires.
 
 ## Current status
 
-Phase 6: provider simulation, finite idempotency protection, lookup profiles,
-controlled failures and restricted database roles implemented and verified.
+Phase 7: reservation execution, durable provider evidence, reconciliation
+and bounded retries after proven no-effect outcomes implemented and verified.
 
-273 tests passed: 175 unit tests and 98 integration tests.
-The HTTP demonstration passed all six provider behavior checks.
-Worker-to-provider integration and recovery policies follow in Phase 7.
+351 tests passed: 228 unit tests and 123 integration tests.
+The recovery demonstration passed six scenarios, each with one observed
+provider effect per operation.
 
 ## Local setup
 
@@ -95,7 +95,8 @@ Publish accepted work using the dispatcher. Scan expired attempts manually:
 
     python -m retry_window_lab.recover
 
-Expired attempts become uncertain and require review.
+Expired attempts are recorded as uncertain; configured reservation tasks
+enter provider-aware recovery.
 See docs/WORKERS.md for ownership, acknowledgement and recovery behavior.
 
 ## Provider simulator
@@ -114,3 +115,22 @@ Run the demonstration from another terminal:
 
 The demonstration intentionally creates duplicate effects after protection
 expires. See docs/PROVIDER_SIMULATOR.md for contracts and limitations.
+
+## Reservation recovery
+
+With the provider running, execute the recovery demonstration:
+
+    python -m retry_window_lab.recovery_demo
+
+Bind provider context before executing a reservation task.
+The task API exposes provider-context binding and recovery status endpoints.
+
+See docs/RECOVERY.md for contracts, budgets, scheduling and limitations.
+
+Browser interfaces:
+
+- Task API documentation: http://127.0.0.1:8000/docs
+- Provider documentation: http://127.0.0.1:8001/docs
+
+Start the corresponding API service before opening its documentation.
+A dedicated monitoring dashboard is planned for the observability phase.

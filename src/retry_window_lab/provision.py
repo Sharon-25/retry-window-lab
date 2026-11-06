@@ -46,7 +46,7 @@ def configure_roles(conninfo, app_password, provider_password,
             c.execute(sql.SQL('REVOKE ALL ON ALL TABLES IN SCHEMA {} FROM PUBLIC,{},{}')
                       .format(sql.Identifier(schema), sql.Identifier(app_role), sql.Identifier(provider_role)))
         for role, schema, names in (
-            (app_role, app_schema, ('tasks','attempts','outbox')),
+            (app_role, app_schema, ('tasks','attempts','outbox','provider_context','provider_dispatches','provider_observations','recovery_decisions')),
             (provider_role, provider_schema, ('experiments','inventory','reservations','protection_keys','requests')),
         ):
             c.execute(sql.SQL('GRANT USAGE ON SCHEMA {} TO {}').format(sql.Identifier(schema),sql.Identifier(role)))
