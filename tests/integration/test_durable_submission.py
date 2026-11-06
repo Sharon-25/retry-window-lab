@@ -90,7 +90,7 @@ def test_first_time_concurrent_migrations_serialize():
     try:
         with ThreadPoolExecutor(max_workers=4) as pool:
             results = list(pool.map(apply, range(4)))
-        assert results.count([1]) == 1
+        assert results.count([version for version, _ in MIGRATIONS]) == 1
         assert results.count([]) == 3
     finally:
         with connect(conninfo) as connection:

@@ -53,3 +53,17 @@
 
 - Track the upstream TestClient/httpx deprecation warning.
   All current tests pass; no compatibility change is required for this milestone.
+
+## Phase 5 — Distributed workers and ownership
+
+- Verified: migration 2 preserves existing tasks and publication intent.
+- Verified: consumer groups and pending-notification reclamation.
+- Verified: atomic claims, durable attempts and monotonic ownership tokens.
+- Verified: checksum execution and transactional result persistence.
+- Verified: heartbeat renewal and stale completion rejection.
+- Verified: expired attempts become UNKNOWN and tasks require review.
+- Verified: concurrent processes, duplicate notifications and abrupt process loss.
+- Verified: 201 tests passed on Ubuntu / WSL2.
+- Verified: manual demonstration completed eight tasks with eight attempts.
+- Implementation and verification complete; remote synchronization is checked
+  after pushing the milestone commit.

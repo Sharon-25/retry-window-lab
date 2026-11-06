@@ -42,7 +42,32 @@ CREATE INDEX outbox_unpublished_idx
     ON outbox (created_at, event_id) WHERE published_at IS NULL;
 """
 
-MIGRATIONS = ((1, INITIAL_SQL),)
+WORKER_SQL = """
+ALTER TABLE tasks ADD COLUMN lease_token BIGINT NOT NULL DEFAULT 0 CHECK (lease_token >= 0);
+ALTER TABLE tasks ADD COLUMN lease_until TIMESTAMPTZ;
+ALTER TABLE tasks ADD COLUMN active_attempt_id UUID;
+ALTER TABLE tasks ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0);
+CREATE TABLE attempts (
+    attempt_id UUID PRIMARY KEY,
+    task_id UUID NOT NULL REFERENCES tasks(task_id) ON DELETE CASCADE,
+    number INTEGER NOT NULL CHECK (number > 0),
+    lease_token BIGINT NOT NULL CHECK (lease_token > 0),
+    worker_id TEXT NOT NULL CHECK (char_length(worker_id) BETWEEN 1 AND 128),
+    started_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+    finished_at TIMESTAMPTZ,
+    outcome TEXT NOT NULL DEFAULT 'RUNNING'
+        CHECK (outcome IN ('RUNNING','SUCCEEDED','KNOWN_FAILURE','UNKNOWN')),
+    error_code TEXT CHECK (error_code IS NULL OR error_code IN (
+        'KNOWN_PERMANENT_FAILURE','UNEXPECTED_HANDLER_ERROR','LEASE_EXPIRED'
+    )),
+    UNIQUE(task_id, number),
+    UNIQUE(task_id, lease_token),
+    CHECK ((outcome = 'RUNNING') = (finished_at IS NULL))
+);
+CREATE INDEX tasks_expired_lease_idx ON tasks(lease_until) WHERE state = 'RUNNING';
+"""
+
+MIGRATIONS = ((1, INITIAL_SQL), (2, WORKER_SQL))
 
 
 def migrate(conninfo: str, schema: str = DEFAULT_SCHEMA) -> list[int]:

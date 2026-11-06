@@ -13,11 +13,12 @@ provider's idempotency protection expires.
 
 ## Current status
 
-Phase 4: durable task submission, transactional outbox, Redis Streams
-publication and submission/status API implemented and verified.
+Phase 5: independent checksum workers, durable attempts, PostgreSQL leases,
+heartbeat renewal and stale completion rejection implemented and verified.
 
-131 tests passed: 97 unit tests and 34 integration tests.
-Independent worker execution follows in Phase 5.
+201 tests passed: 142 unit tests and 59 integration tests.
+The manual demonstration verified eight successful tasks and eight attempts.
+Provider simulation and provider-aware recovery follow.
 
 ## Local setup
 
@@ -81,3 +82,17 @@ For continuous publication:
 Interactive API documentation: http://localhost:8000/docs
 
 See docs/DURABLE_SUBMISSION.md and docs/API_AND_DELIVERY.md.
+
+## Workers
+
+Run each worker in a separate terminal:
+
+    python -m retry_window_lab.worker --worker-id worker-a
+    python -m retry_window_lab.worker --worker-id worker-b
+
+Publish accepted work using the dispatcher. Scan expired attempts manually:
+
+    python -m retry_window_lab.recover
+
+Expired attempts become uncertain and require review.
+See docs/WORKERS.md for ownership, acknowledgement and recovery behavior.
