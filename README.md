@@ -13,10 +13,11 @@ provider's idempotency protection expires.
 
 ## Current status
 
-Phase 3: validated task definitions, lifecycle rules, attempt records and
-local checksum execution implemented and verified.
-77 unit tests and 2 infrastructure integration tests pass.
-Durable submission, distributed execution and recovery policies follow.
+Phase 4: durable task submission, transactional outbox, Redis Streams
+publication and submission/status API implemented and verified.
+
+131 tests passed: 97 unit tests and 34 integration tests.
+Independent worker execution follows in Phase 5.
 
 ## Local setup
 
@@ -62,3 +63,21 @@ See docs/RETRY_WINDOW_LAB_SPEC.md.
     python -m retry_window_lab.demo
 
 See docs/LOCAL_EXECUTION.md for behavior and limitations.
+
+## API and dispatcher
+
+Start the API:
+
+    python -m uvicorn retry_window_lab.api:app --host 127.0.0.1 --port 8000
+
+In a separate terminal, publish pending notifications:
+
+    python -m retry_window_lab.dispatcher --once
+
+For continuous publication:
+
+    python -m retry_window_lab.dispatcher
+
+Interactive API documentation: http://localhost:8000/docs
+
+See docs/DURABLE_SUBMISSION.md and docs/API_AND_DELIVERY.md.

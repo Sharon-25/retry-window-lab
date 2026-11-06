@@ -35,3 +35,21 @@
 - Verified: checksum demonstration and unchanged dependency requirements.
 - Implementation and verification complete; Git synchronization is checked
   after pushing the milestone commit.
+
+## Phase 4 — Durable submission and delivery
+
+- Verified: versioned migrations and migration consistency checks.
+- Verified: durable submissions and atomic submission-key conflict handling.
+- Verified: task acceptance and outbox creation in one transaction.
+- Verified: Redis Streams publication and conditional publication marking.
+- Verified: submission and task-status API endpoints.
+- Verified: concurrent submissions, rollback and publication failure scenarios.
+- Verified: 131 tests passed on Ubuntu / WSL2.
+- Verified: manual API submission, reuse, retrieval and dispatcher demonstration.
+- Implementation and verification complete; remote synchronization is checked
+  after pushing the milestone commit.
+
+## Compatibility follow-up
+
+- Track the upstream TestClient/httpx deprecation warning.
+  All current tests pass; no compatibility change is required for this milestone.
