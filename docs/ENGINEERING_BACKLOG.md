@@ -111,3 +111,13 @@
 - Verified the dashboard and correlated task history in the browser.
 - Verified that committed recovery decisions match structured log IDs.
 - All 364 tests passed on Ubuntu / WSL2.
+
+## Phase 10 — Recovery policy comparison
+
+- Verified: 367 tests passed on Ubuntu / WSL2 with Docker Compose.
+- Verified: seed 42 produced 24 isolated trials and both report formats.
+- Verified: the provider ledger recorded five extra reservations with fresh
+  keys, four with the same key and zero with evidence-based recovery.
+- Verified: unavailable evidence left one operation in NEEDS_REVIEW.
+- Verified: a same-key resend sent at provider second 59 created an extra
+  reservation when delivered at second 61.

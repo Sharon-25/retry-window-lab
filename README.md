@@ -13,12 +13,11 @@ provider's idempotency protection expires.
 
 ## Current status
 
-Phase 9 adds a read-only queue dashboard, durable monitoring snapshots
-and structured logs that correlate task attempts with recovery decisions.
-
-All 364 tests passed on Ubuntu / WSL2. The browser demo verified queue
-capacity, worker activity and a review task whose final decision was
-Evidence exhausted.
+Phase 10 compares three retry policies across eight provider fault scenarios.
+All 367 tests passed on Ubuntu / WSL2. In the 24-trial comparison, the
+evidence-based policy confirmed six single-reservation completions with zero
+extra reservations. The fresh-key and same-key policies produced five and
+four extra reservations, respectively.
 
 ## Local setup
 
@@ -157,3 +156,13 @@ With the provider running, launch the isolated dashboard demo:
 
 See [Monitoring](docs/MONITORING.md) for metric definitions, task history
 and structured log correlation.
+
+## Retry policy comparison
+
+With the provider simulator running, generate the comparison report:
+
+    report_dir=$(mktemp -d /tmp/rwl-comparison.XXXXXX)
+    python -m retry_window_lab.comparison --seed 42 --output "$report_dir/results"
+
+See [Retry policy comparison](docs/POLICY_COMPARISON.md) for the scenario
+matrix, measurement definitions and verified results.
