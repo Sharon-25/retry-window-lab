@@ -45,14 +45,28 @@ def configure_roles(conninfo, app_password, provider_password,
                       .format(sql.Identifier(schema), sql.Identifier(app_role), sql.Identifier(provider_role)))
             c.execute(sql.SQL('REVOKE ALL ON ALL TABLES IN SCHEMA {} FROM PUBLIC,{},{}')
                       .format(sql.Identifier(schema), sql.Identifier(app_role), sql.Identifier(provider_role)))
-        for role, schema, names in (
-            (app_role, app_schema, ('tasks','attempts','outbox','provider_context','provider_dispatches','provider_observations','recovery_decisions')),
-            (provider_role, provider_schema, ('experiments','inventory','reservations','protection_keys','requests')),
-        ):
-            c.execute(sql.SQL('GRANT USAGE ON SCHEMA {} TO {}').format(sql.Identifier(schema),sql.Identifier(role)))
-            for name in names:
-                c.execute(sql.SQL('GRANT SELECT,INSERT,UPDATE ON {} TO {}')
-                          .format(table(schema,name),sql.Identifier(role)))
+        grant_application_tables(c, app_schema, app_role)
+        c.execute(sql.SQL("GRANT USAGE ON SCHEMA {} TO {}").format(
+            sql.Identifier(provider_schema), sql.Identifier(provider_role)
+        ))
+        for name in ('experiments', 'inventory', 'reservations', 'protection_keys', 'requests'):
+            c.execute(sql.SQL("GRANT SELECT,INSERT,UPDATE ON {} TO {}").format(
+                table(provider_schema, name), sql.Identifier(provider_role)
+            ))
+
+
+def grant_application_tables(connection, schema, role):
+    connection.execute(sql.SQL("GRANT USAGE ON SCHEMA {} TO {}").format(
+        sql.Identifier(schema), sql.Identifier(role)
+    ))
+    for name in ('tasks', 'attempts', 'outbox', 'provider_context',
+                 'provider_dispatches', 'provider_observations', 'recovery_decisions'):
+        connection.execute(sql.SQL("GRANT SELECT,INSERT,UPDATE ON {} TO {}").format(
+            table(schema, name), sql.Identifier(role)
+        ))
+    connection.execute(sql.SQL("GRANT SELECT ON {} TO {}").format(
+        table(schema, "queue_settings"), sql.Identifier(role)
+    ))
 
 
 def main():

@@ -128,7 +128,17 @@ CREATE INDEX tasks_recovery_due_idx ON tasks(recovery_due_at) WHERE state='RECON
 CREATE INDEX tasks_retry_due_idx ON tasks(retry_due_at) WHERE state='RETRY_WAIT';
 """
 
-MIGRATIONS = ((1, INITIAL_SQL), (2, WORKER_SQL), (3, RECOVERY_SQL))
+CAPACITY_SQL = """
+CREATE TABLE queue_settings (
+    singleton BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (singleton),
+    outstanding_limit INTEGER NOT NULL CHECK (outstanding_limit BETWEEN 1 AND 1000000)
+);
+INSERT INTO queue_settings (outstanding_limit) VALUES (1000);
+CREATE INDEX tasks_outstanding_idx ON tasks (task_id)
+    WHERE state NOT IN ('SUCCEEDED', 'FAILED');
+"""
+
+MIGRATIONS = ((1, INITIAL_SQL), (2, WORKER_SQL), (3, RECOVERY_SQL), (4, CAPACITY_SQL))
 
 
 def migrate(conninfo: str, schema: str = DEFAULT_SCHEMA) -> list[int]:

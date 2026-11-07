@@ -425,7 +425,7 @@ def test_api_context_binding_and_recovery_status(environment):
         assert api.get(f'/tasks/{uuid4()}/recovery').status_code==404
 
 
-def test_upgrade_from_phase6_preserves_checksum_tasks_and_migrations(environment,monkeypatch):
+def test_upgrade_from_phase6_preserves_checksum_tasks_and_migrations(environment,monkeypatch,legacy_checksum_task):
     import retry_window_lab.migrate as module
     env=environment
     schema=f'rwl_test_{uuid4().hex}'
@@ -433,9 +433,9 @@ def test_upgrade_from_phase6_preserves_checksum_tasks_and_migrations(environment
     try:
         monkeypatch.setattr(module,'MIGRATIONS',versions[:2])
         assert module.migrate(env.conninfo,schema)==[1,2]
-        stored=TaskRepository(env.conninfo,schema).submit(TaskDefinition('checksum','upgrade',{'text':'abc'})).task
+        stored=legacy_checksum_task(env.conninfo,schema)
         monkeypatch.setattr(module,'MIGRATIONS',versions)
-        assert module.migrate(env.conninfo,schema)==[3]
+        assert module.migrate(env.conninfo,schema)==[version for version,_ in versions[2:]]
         assert TaskRepository(env.conninfo,schema).get(stored.task_id).as_dict()==stored.as_dict()
     finally:
         with connect(env.conninfo) as c:

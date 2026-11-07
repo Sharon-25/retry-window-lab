@@ -241,12 +241,13 @@ class RecoveryRepository:
             self._close(c,task,claim,state,outcome,code,reason,observation,result)
             return state
 
-    def schedule_due(self,limit=100):
+    def schedule_due(self,limit=100,*,due_before=None):
         bounded_int(limit,1,1000,'limit')
         with connect(self.conninfo) as c,c.transaction():
             tasks=c.execute(sql.SQL("""SELECT * FROM {} WHERE state='RETRY_WAIT'
-                AND retry_due_at<=clock_timestamp() ORDER BY retry_due_at,task_id
-                LIMIT %s FOR UPDATE SKIP LOCKED""").format(self.t('tasks')),(limit,)).fetchall()
+                AND retry_due_at<=LEAST(clock_timestamp(), %s::timestamptz)
+                ORDER BY retry_due_at,task_id
+                LIMIT %s FOR UPDATE SKIP LOCKED""").format(self.t('tasks')),(due_before,limit)).fetchall()
             for task in tasks:
                 if task['mutation_attempts']>=3:
                     raise RuntimeError('Exhausted mutation entered retry wait')

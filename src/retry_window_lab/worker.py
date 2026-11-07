@@ -1,8 +1,12 @@
-"""One synchronous handler at a time per worker process."""
+"""Run bounded execution slots and one independent recovery lane."""
 import argparse
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import ExitStack
 import json
+import signal
 import socket
-from threading import Event, Thread
+from threading import Event, Lock, Thread
 from uuid import uuid4
 
 import psycopg
@@ -11,6 +15,7 @@ from redis.exceptions import RedisError, ResponseError
 
 from retry_window_lab.config import redis_url
 from retry_window_lab.runtime_config import application_conninfo
+from retry_window_lab.db import DEFAULT_SCHEMA, validate_schema
 from retry_window_lab.dispatcher import READY_STREAM
 from retry_window_lab.domain import canonical_json
 from retry_window_lab.local import KnownTaskFailure, checksum_handler
@@ -19,6 +24,13 @@ from retry_window_lab.ownership import (
 )
 
 GROUP = 'rwl:workers'
+MAX_CONCURRENCY = 8
+REPORT_LOCK = Lock()
+
+
+def emit(report):
+    with REPORT_LOCK:
+        print(json.dumps(report), flush=True)
 
 
 class LeaseHeartbeat:
@@ -99,7 +111,7 @@ class Worker:
             if not str(error).startswith('BUSYGROUP'):
                 raise
 
-    def tick(self):
+    def _read(self):
         # Redis pending age is a transport concern, never permission to execute.
         reclaimed = self.client.xautoclaim(
             self.stream, self.group, self.worker_id, self.reclaim_ms,
@@ -111,6 +123,17 @@ class Worker:
             batches = self.client.xreadgroup(self.group, self.worker_id,
                                              {self.stream: '>'}, count=1)
             entries = [] if not batches else batches[0][1]
+        return entries
+
+    def tick(self):
+        try:
+            entries = self._read()
+        except ResponseError as error:
+            if not str(error).startswith('NOGROUP'):
+                raise
+            self.ensure_group()
+            self.cursor = '0-0'
+            entries = self._read()
         if not entries:
             return {'event': 'worker', 'status': 'idle'}
         message_id, fields = entries[0]
@@ -132,46 +155,109 @@ class Worker:
         return {'event': 'worker', 'status': status, 'task_id': str(notification.task_id)}
 
 
+def recovery_pass(repository, recovery_repository, recovery_service):
+    expired = repository.expire()
+    if expired:
+        emit({'event': 'expired_attempts', 'count': expired})
+    scheduled = recovery_repository.schedule_due()
+    reconciled = recovery_service.run_once()
+    if scheduled or reconciled != 'idle':
+        emit({'event': 'recovery', 'scheduled': scheduled, 'status': reconciled})
+
+
+def report_tick(worker, *, once=False):
+    report = worker.tick()
+    if once or report['status'] != 'idle':
+        emit(report)
+    return report['status'] != 'idle'
+
+
+async def run_slots(workers, recover):
+    stop = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    # Reserve a thread for recovery even when the host has few logical CPUs.
+    loop.set_default_executor(ThreadPoolExecutor(max_workers=len(workers) + 1))
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, stop.set)
+
+    async def run(operation):
+        while not stop.is_set():
+            delay = 0.25
+            try:
+                busy = await asyncio.to_thread(operation)
+                if busy:
+                    continue
+            except (psycopg.Error, RedisError) as error:
+                emit({'event': 'worker_error', 'type': type(error).__name__})
+                delay = 1
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=delay)
+            except TimeoutError:
+                pass
+
+    try:
+        async with asyncio.TaskGroup() as tasks:
+            tasks.create_task(run(recover))
+            for worker in workers:
+                tasks.create_task(run(lambda worker=worker: report_tick(worker)))
+    finally:
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.remove_signal_handler(sig)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--worker-id', default=f'{socket.gethostname()}-{uuid4().hex[:12]}')
     parser.add_argument('--once', action='store_true', help='Handle at most one notification')
     parser.add_argument('--lease-seconds', type=int, default=30)
+    parser.add_argument('--concurrency', type=int, default=1,
+                        help='Concurrent execution slots per process (1–8)')
+    parser.add_argument('--schema', default=DEFAULT_SCHEMA)
+    parser.add_argument('--stream', default=READY_STREAM)
     args = parser.parse_args()
-    repository = OwnershipRepository(application_conninfo())
-    from retry_window_lab.recovery import RecoveryRepository,RecoveryService
-    recovery_repository=RecoveryRepository(repository.conninfo)
-    recovery_service=RecoveryService(recovery_repository,worker_id=args.worker_id)
     try:
-        with Redis.from_url(redis_url(), decode_responses=True,
-                            socket_connect_timeout=2, socket_timeout=2) as client:
-            worker = Worker(repository, client, args.worker_id, lease_seconds=args.lease_seconds)
-            worker.ensure_group()
-            stop = Event()
-            while True:
-                try:
-                    expired = repository.expire()
-                    if expired:
-                        print(json.dumps({'event': 'expired_attempts', 'count': expired}), flush=True)
-                    scheduled=recovery_repository.schedule_due()
-                    reconciled=recovery_service.run_once()
-                    if scheduled or reconciled!='idle':
-                        print(json.dumps({'event':'recovery','scheduled':scheduled,'status':reconciled}),flush=True)
-                    report = worker.tick()
-                    if args.once or report['status'] != 'idle':
-                        print(json.dumps(report), flush=True)
-                except (psycopg.Error, RedisError) as error:
-                    print(json.dumps({'event': 'worker_error', 'type': type(error).__name__}), flush=True)
-                    if args.once:
-                        raise SystemExit(1)
-                    stop.wait(1)
-                    continue
-                if args.once:
-                    break
-                if report['status'] == 'idle':
-                    stop.wait(0.25)
+        bounded_int(args.concurrency, 1, MAX_CONCURRENCY, 'concurrency')
+        bounded_int(args.lease_seconds, 3, 3600, 'lease_seconds')
+        schema = validate_schema(args.schema)
+        if args.once and args.concurrency != 1:
+            raise ValueError('--once requires one execution slot')
+        worker_identity(args.worker_id)
+        consumer_ids = ([args.worker_id] if args.concurrency == 1 else
+                        [worker_identity(f'{args.worker_id}/slot-{index}')
+                         for index in range(1, args.concurrency + 1)])
+    except ValueError as error:
+        parser.error(str(error))
+
+    conninfo = application_conninfo()
+    repository = OwnershipRepository(conninfo, schema)
+    from retry_window_lab.recovery import RecoveryRepository, RecoveryService
+    recovery_repository = RecoveryRepository(conninfo, schema)
+    recovery_service = RecoveryService(recovery_repository, worker_id=args.worker_id)
+
+    def recover():
+        recovery_pass(repository, recovery_repository, recovery_service)
+
+    try:
+        with ExitStack() as stack:
+            workers = []
+            for consumer_id in consumer_ids:
+                client = stack.enter_context(Redis.from_url(
+                    redis_url(), decode_responses=True, socket_connect_timeout=2, socket_timeout=2,
+                ))
+                workers.append(Worker(repository, client, consumer_id, stream=args.stream,
+                                      lease_seconds=args.lease_seconds))
+            if args.once:
+                recover()
+                report_tick(workers[0], once=True)
+            else:
+                asyncio.run(run_slots(workers, recover))
+    except (psycopg.Error, RedisError) as error:
+        emit({'event': 'worker_error', 'type': type(error).__name__})
+        raise SystemExit(1) from None
     except KeyboardInterrupt:
-        print(json.dumps({'event': 'worker_stopped'}), flush=True)
+        pass
+    if not args.once:
+        emit({'event': 'worker_stopped'})
 
 
 if __name__ == '__main__':

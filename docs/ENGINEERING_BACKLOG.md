@@ -96,3 +96,11 @@
 - Verified: six HTTP recovery scenarios with one observed effect per operation.
 - Implementation and verification complete; remote synchronization is checked
   after pushing the milestone commit.
+
+## Phase 8 — Concurrency, capacity and notification recovery
+
+- Verified atomic queue admission, HTTP 429 at capacity and idempotent replay.
+- Verified worker slot limits and recovery progress with occupied execution slots.
+- Verified Redis notification reconstruction, duplicate replay and worker interruption.
+- Migration 4 and restricted application grants applied successfully.
+- All eight Phase 8 integration tests and all 359 project tests passed on Ubuntu / WSL2.

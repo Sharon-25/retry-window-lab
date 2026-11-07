@@ -319,7 +319,7 @@ def test_independent_processes_compete_for_one_claim(environment):
     assert len(snapshot(environment, task.task_id)[1]) == 1
 
 
-def test_upgrade_from_phase4_preserves_tasks_and_outbox(environment, monkeypatch):
+def test_upgrade_from_phase4_preserves_tasks_and_outbox(environment, monkeypatch, legacy_checksum_task):
     import retry_window_lab.migrate as module
     conninfo, schema, *_ = environment
     old_schema = f'rwl_test_{uuid4().hex}'
@@ -327,7 +327,7 @@ def test_upgrade_from_phase4_preserves_tasks_and_outbox(environment, monkeypatch
     try:
         monkeypatch.setattr(module, 'MIGRATIONS', versions[:1])
         assert module.migrate(conninfo, old_schema) == [1]
-        task = TaskRepository(conninfo, old_schema).submit(TaskDefinition('checksum', 'upgrade', {'text': 'abc'})).task
+        task = legacy_checksum_task(conninfo, old_schema)
         monkeypatch.setattr(module, 'MIGRATIONS', versions)
         assert module.migrate(conninfo, old_schema) == [version for version, _ in versions[1:]]
         assert module.migrate(conninfo, old_schema) == []

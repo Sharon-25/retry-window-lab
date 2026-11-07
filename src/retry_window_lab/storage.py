@@ -6,6 +6,7 @@ from uuid import UUID, uuid4
 from psycopg import sql
 from psycopg.types.json import Jsonb
 
+from retry_window_lab.capacity import QueueAtCapacity, lock_admission, queue_limit
 from retry_window_lab.db import DEFAULT_SCHEMA, connect, table, validate_schema
 from retry_window_lab.domain import TaskDefinition, TaskState, canonical_json
 from retry_window_lab.local import SubmissionConflict
@@ -65,45 +66,49 @@ class TaskRepository:
     def submit(self, definition: TaskDefinition) -> SubmissionResult:
         if not isinstance(definition, TaskDefinition):
             raise ValueError("submit requires a validated TaskDefinition")
-        with connect(self._conninfo) as connection:
-            with connection.transaction():
-                row = connection.execute(
-                    sql.SQL("""
-                        INSERT INTO {} (
-                            task_id, operation_id, submission_key,
-                            kind, payload, fingerprint
-                        ) VALUES (%s, %s, %s, %s, %s, %s)
-                        ON CONFLICT (submission_key) DO NOTHING
-                        RETURNING *
-                    """).format(table(self._schema, "tasks")),
-                    (uuid4(), uuid4(), definition.submission_key,
-                     definition.kind.value, Jsonb(definition.payload), definition.fingerprint),
-                ).fetchone()
+        with connect(self._conninfo) as connection, connection.transaction():
+            lock_admission(connection, self._schema)
+            tasks = table(self._schema, "tasks")
+            existing = connection.execute(
+                sql.SQL("SELECT * FROM {} WHERE submission_key = %s").format(tasks),
+                (definition.submission_key,),
+            ).fetchone()
+            if existing is not None:
+                if existing["fingerprint"] != definition.fingerprint:
+                    raise SubmissionConflict("submission_key reused with different work")
+                return SubmissionResult(task=_stored(existing), created=False)
 
-                if row is None:
-                    # A separate statement obtains a fresh Read Committed snapshot.
-                    row = connection.execute(
-                        sql.SQL("SELECT * FROM {} WHERE submission_key = %s")
-                        .format(table(self._schema, "tasks")),
-                        (definition.submission_key,),
-                    ).fetchone()
-                    if row is None:
-                        raise RuntimeError("Conflicting task disappeared; resubmit same key")
-                    if row["fingerprint"] != definition.fingerprint:
-                        raise SubmissionConflict("submission_key reused with different work")
-                    result = SubmissionResult(task=_stored(row), created=False)
-                else:
-                    connection.execute(
-                        sql.SQL("""
-                            INSERT INTO {} (
-                                event_id, task_id, delivery_generation, event_type
-                            ) VALUES (%s, %s, %s, 'TASK_READY')
-                        """).format(table(self._schema, "outbox")),
-                        (uuid4(), row["task_id"], row["delivery_generation"]),
-                    )
-                    result = SubmissionResult(task=_stored(row), created=True)
-            # Return acceptance only after the transaction context committed.
-            return result
+            limit = queue_limit(connection, self._schema)
+            outstanding = connection.execute(
+                sql.SQL("""
+                    SELECT count(*) AS total FROM (
+                        SELECT task_id FROM {} WHERE state NOT IN ('SUCCEEDED', 'FAILED')
+                        LIMIT %s
+                    ) AS outstanding
+                """).format(tasks),
+                (limit,),
+            ).fetchone()["total"]
+            if outstanding >= limit:
+                raise QueueAtCapacity("Outstanding task limit reached")
+
+            row = connection.execute(
+                sql.SQL("""
+                    INSERT INTO {} (
+                        task_id, operation_id, submission_key, kind, payload, fingerprint
+                    ) VALUES (%s, %s, %s, %s, %s, %s)
+                    RETURNING *
+                """).format(tasks),
+                (uuid4(), uuid4(), definition.submission_key,
+                 definition.kind.value, Jsonb(definition.payload), definition.fingerprint),
+            ).fetchone()
+            connection.execute(
+                sql.SQL("""
+                    INSERT INTO {} (event_id, task_id, delivery_generation, event_type)
+                    VALUES (%s, %s, %s, 'TASK_READY')
+                """).format(table(self._schema, "outbox")),
+                (uuid4(), row["task_id"], row["delivery_generation"]),
+            )
+            return SubmissionResult(task=_stored(row), created=True)
 
     def get(self, task_id: UUID) -> StoredTask | None:
         if not isinstance(task_id, UUID):

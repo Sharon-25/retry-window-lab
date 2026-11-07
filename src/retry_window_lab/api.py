@@ -11,6 +11,7 @@ from retry_window_lab.runtime_config import application_conninfo
 from retry_window_lab.domain import TaskDefinition
 from retry_window_lab.local import SubmissionConflict
 from retry_window_lab.storage import TaskRepository
+from retry_window_lab.capacity import QueueAtCapacity
 from retry_window_lab.recovery import ContextConflict,RecoveryRepository
 
 
@@ -50,7 +51,12 @@ def create_app(repository: TaskRepository | None = None) -> FastAPI:
             result = store.submit(definition)
         except SubmissionConflict:
             raise HTTPException(status_code=409, detail="submission_key_conflict") from None
-        except psycopg.OperationalError:
+        except QueueAtCapacity:
+            raise HTTPException(
+                status_code=429, detail="queue_at_capacity", headers={"Retry-After": "1"},
+            ) from None
+        except (psycopg.OperationalError, psycopg.errors.LockNotAvailable,
+                psycopg.errors.QueryCanceled):
             raise HTTPException(
                 status_code=503, detail="database_unavailable", headers={"Retry-After": "1"},
             ) from None

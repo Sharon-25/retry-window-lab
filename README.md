@@ -13,12 +13,13 @@ provider's idempotency protection expires.
 
 ## Current status
 
-Phase 7: reservation execution, durable provider evidence, reconciliation
-and bounded retries after proven no-effect outcomes implemented and verified.
+Phase 8 adds queue backpressure, configurable worker concurrency,
+dedicated recovery capacity and Redis notification replay.
 
-351 tests passed: 228 unit tests and 123 integration tests.
-The recovery demonstration passed six scenarios, each with one observed
-provider effect per operation.
+All 359 tests passed on Ubuntu / WSL2. The concurrency demo observed four
+active execution slots, rebuilt six notifications and completed eight tasks.
+Two interrupted tasks entered NEEDS_REVIEW while the surviving worker
+continued processing.
 
 ## Local setup
 
@@ -134,3 +135,16 @@ Browser interfaces:
 
 Start the corresponding API service before opening its documentation.
 A dedicated monitoring dashboard is planned for the observability phase.
+
+## Queue capacity and Redis recovery
+
+Run the isolated concurrency demonstration:
+
+    python -m retry_window_lab.capacity_demo
+
+After Redis loss, rebuild ready notifications from PostgreSQL:
+
+    python -m retry_window_lab.dispatcher --replay-ready
+
+See [Capacity and concurrency](docs/CAPACITY.md) for worker slots,
+admission limits and replay behavior.

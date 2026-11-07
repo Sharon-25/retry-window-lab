@@ -15,16 +15,13 @@ from retry_window_lab.dispatcher import OutboxDispatcher
 from retry_window_lab.domain import TaskDefinition
 from retry_window_lab.migrate import migrate
 from retry_window_lab.ownership import OwnershipRepository
+from retry_window_lab.provision import grant_application_tables
 from retry_window_lab.provider import ProviderRepository
 from retry_window_lab.provider_client import provider_url
 from retry_window_lab.recovery import RecoveryRepository,RecoveryService
 from retry_window_lab.runtime_config import application_conninfo
 from retry_window_lab.storage import TaskRepository
 from retry_window_lab.worker import Worker
-
-
-RUNTIME_TABLES=('tasks','attempts','outbox','provider_context','provider_dispatches',
-                'provider_observations','recovery_decisions')
 
 
 def main():
@@ -42,9 +39,7 @@ def main():
         migrate(admin,schema)
         role=validate_schema(os.environ['RWL_APP_USER'])
         with connect(admin) as c,c.transaction():
-            c.execute(sql.SQL('GRANT USAGE ON SCHEMA {} TO {}').format(sql.Identifier(schema),sql.Identifier(role)))
-            for name in RUNTIME_TABLES:
-                c.execute(sql.SQL('GRANT SELECT,INSERT,UPDATE ON {} TO {}').format(table(schema,name),sql.Identifier(role)))
+            grant_application_tables(c, schema, role)
         store=TaskRepository(app,schema)
         ownership=OwnershipRepository(app,schema)
         recovery=RecoveryRepository(app,schema)
