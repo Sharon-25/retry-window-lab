@@ -1,6 +1,8 @@
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from types import SimpleNamespace
+import json
+import logging
 import os
 import subprocess
 import sys
@@ -17,6 +19,7 @@ from retry_window_lab.config import postgres_conninfo,redis_url
 from retry_window_lab.db import connect,table
 from retry_window_lab.dispatcher import OutboxDispatcher
 from retry_window_lab.domain import TaskDefinition
+from retry_window_lab.events import LOGGER_NAME
 from retry_window_lab.migrate import migrate
 from retry_window_lab.ownership import Notification,OwnershipRepository
 from retry_window_lab.provider import ProviderRepository
@@ -470,3 +473,66 @@ os._exit(17)
         reconcile(env,stored)
     assert row(env,stored.task_id)['state']=='NEEDS_REVIEW'
     assert count(env,'provider_dispatches',stored.task_id)==1 and stock(env,experiment)==100
+
+
+def test_monitoring_links_provider_history_and_committed_logs(environment, caplog):
+    env = environment
+    stored, experiment = task(env)
+    env.provider.inject(experiment, "RESPONSE_LOST")
+    with caplog.at_level(logging.INFO, logger=LOGGER_NAME):
+        state, claim, dispatch = execute(env, stored)
+        assert state == "RECONCILING"
+        assert reconcile(env, stored) == "SUCCEEDED"
+        retry, retry_experiment = task(env)
+        env.provider.inject(retry_experiment, "REJECT_NO_EFFECT")
+        assert execute(env, retry)[0] == "RETRY_WAIT"
+
+    with TestClient(create_app(env.store)) as api:
+        snapshot = api.get("/monitoring/summary").json()
+        assert snapshot["recovery"]["reconciliation_attempts"] == 1
+        assert snapshot["recovery"]["retry_decisions"] == 1
+        assert snapshot["states"]["RETRY_WAIT"] == 1
+        history = api.get(f"/monitoring/tasks/{stored.task_id}").json()
+    assert history["task"]["state"] == "SUCCEEDED"
+    assert [row["purpose"] for row in history["attempts"]] == ["EXECUTION", "RECONCILIATION"]
+    assert history["dispatches"][0]["dispatch_id"] == str(dispatch.dispatch_id)
+    assert history["dispatches"][0]["attempt_id"] == str(claim.attempt_id)
+    assert "request_body" not in history["dispatches"][0]
+    assert [row["source"] for row in history["observations"]] == ["MUTATION", "LOOKUP"]
+    assert all("body" not in row for row in history["observations"])
+    assert [row["reason"] for row in history["decisions"]] == ["PROVIDER_UNKNOWN", "EFFECT_CONFIRMED"]
+    assert {row["observation_id"] for row in history["decisions"]} == {
+        row["observation_id"] for row in history["observations"]
+    }
+    events = [json.loads(record.getMessage()) for record in caplog.records
+              if record.name == LOGGER_NAME]
+    decisions = {entry["decision_id"]: entry for entry in events
+                 if entry["event"] == "recovery_decision"}
+    for decision in history["decisions"]:
+        entry = decisions[decision["decision_id"]]
+        assert entry["task_id"] == str(stored.task_id)
+        assert entry["attempt_id"] == decision["attempt_id"]
+        assert entry["observation_id"] == decision["observation_id"]
+
+
+def test_rolled_back_recovery_decision_is_not_logged(environment, caplog):
+    env = environment
+    stored, experiment = task(env)
+    env.provider.inject(experiment, "REJECT_NO_EFFECT")
+    with connect(env.conninfo) as connection:
+        connection.execute(sql.SQL("""
+            CREATE FUNCTION {}() RETURNS trigger LANGUAGE plpgsql AS $$
+            BEGIN RAISE EXCEPTION 'deferred decision failure'; END; $$
+        """).format(table(env.schema, "fail_decision")))
+        connection.execute(sql.SQL("""
+            CREATE CONSTRAINT TRIGGER fail_decision
+            AFTER INSERT ON {} DEFERRABLE INITIALLY DEFERRED
+            FOR EACH ROW EXECUTE FUNCTION {}()
+        """).format(table(env.schema, "recovery_decisions"), table(env.schema, "fail_decision")))
+    with caplog.at_level(logging.INFO, logger=LOGGER_NAME), pytest.raises(psycopg.errors.RaiseException):
+        execute(env, stored)
+    assert env.store.get(stored.task_id).state.value == "RUNNING"
+    assert count(env, "recovery_decisions", stored.task_id) == 0
+    assert count(env, "provider_observations", stored.task_id) == 0
+    assert all("recovery_decision" not in record.getMessage() for record in caplog.records
+               if record.name == LOGGER_NAME)

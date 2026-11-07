@@ -8,6 +8,7 @@ from psycopg.types.json import Jsonb
 
 from retry_window_lab.db import DEFAULT_SCHEMA,connect,table,validate_schema
 from retry_window_lab.domain import TaskDefinition,TaskState,validate_transition
+from retry_window_lab.events import emit_event
 from retry_window_lab.ownership import Claim,OwnershipRepository,bounded_int,worker_identity
 from retry_window_lab.provider_client import ProviderClient,lookup_evidence,mutation_evidence,provider_url
 
@@ -102,9 +103,12 @@ class RecoveryRepository:
         return observation_id
 
     def _decision(self,c,task_id,attempt_id,reason,observation_id=None,details=None):
+        decision_id = uuid4()
         c.execute(sql.SQL('''INSERT INTO {}(decision_id,task_id,attempt_id,observation_id,reason,details)
             VALUES(%s,%s,%s,%s,%s,%s)''').format(self.t('recovery_decisions')),
-            (uuid4(),task_id,attempt_id,observation_id,reason,Jsonb({} if details is None else details)))
+            (decision_id,task_id,attempt_id,observation_id,reason,Jsonb({} if details is None else details)))
+        return {'decision_id': decision_id, 'task_id': task_id, 'attempt_id': attempt_id,
+                'observation_id': observation_id, 'reason': reason, 'policy_version': 1}
 
     def _close(self,c,task,claim,state,outcome,code,reason,observation_id=None,result=None,delay=0):
         if task['state']!=state:
@@ -120,9 +124,10 @@ class RecoveryRepository:
             recovery_due_at=CASE WHEN %s THEN clock_timestamp()+interval '1 second' ELSE NULL END
             WHERE task_id=%s''').format(self.t('tasks')),
             (state,None if result is None else Jsonb(result),state=='RETRY_WAIT',delay,state=='RECONCILING',claim.task_id))
-        self._decision(c,claim.task_id,claim.attempt_id,reason,observation_id,
+        decision = self._decision(c,claim.task_id,claim.attempt_id,reason,observation_id,
                        {'mutation_attempts':task['mutation_attempts'],'observation_count':task['observation_count'],
                         'retry_delay_seconds':delay if state=='RETRY_WAIT' else None})
+        return {**decision, 'state': state, 'attempt_outcome': outcome}
 
     def _retry(self,c,task):
         unresolved=c.execute(sql.SQL('SELECT 1 FROM {} WHERE task_id=%s AND NOT settled_no_effect LIMIT 1')
@@ -166,8 +171,9 @@ class RecoveryRepository:
                 state,code='NEEDS_REVIEW','PROVIDER_CONFLICT'
             else:
                 reason='PROVIDER_UNKNOWN'
-            self._close(c,task,claim,state,outcome,code,reason,observation,result,delay)
-            return state
+            decision = self._close(c,task,claim,state,outcome,code,reason,observation,result,delay)
+        emit_event('recovery_decision', **decision)
+        return state
 
     def _result(self,data,source):
         return {key:data[key] for key in ('reservation_id','operation_id','sku','quantity','fingerprint')} | {'evidence_source':source}
@@ -190,8 +196,7 @@ class RecoveryRepository:
                 outcome='KNOWN_FAILURE'
         elif task['observation_count']>=5:
             state,reason='NEEDS_REVIEW','EVIDENCE_EXHAUSTED'
-        self._close(c,task,claim,state,outcome,'LEASE_EXPIRED',reason,delay=delay)
-        return True
+        return self._close(c,task,claim,state,outcome,'LEASE_EXPIRED',reason,delay=delay)
 
     def claim_reconciliation(self,worker_id='recovery-scanner',lease_seconds=30):
         worker_identity(worker_id)
@@ -205,21 +210,26 @@ class RecoveryRepository:
             if task['observation_count']>=5:
                 c.execute(sql.SQL("UPDATE {} SET state='NEEDS_REVIEW',recovery_due_at=NULL,updated_at=clock_timestamp() WHERE task_id=%s")
                           .format(self.t('tasks')),(task['task_id'],))
-                self._decision(c,task['task_id'],None,'EVIDENCE_EXHAUSTED')
-                return None
-            context=self._context(c,task['task_id'])
-            if context is None:
-                raise RuntimeError('Reconciliation context missing')
-            claim=Claim(task['task_id'],uuid4(),task['lease_token']+1,
-                        TaskDefinition(task['kind'],task['submission_key'],task['payload']))
-            c.execute(sql.SQL('''UPDATE {} SET lease_token=%s,active_attempt_id=%s,attempt_count=attempt_count+1,
-                observation_count=observation_count+1,lease_until=clock_timestamp()+(%s * interval '1 second'),
-                updated_at=clock_timestamp() WHERE task_id=%s''').format(self.t('tasks')),
-                (claim.token,claim.attempt_id,lease_seconds,claim.task_id))
-            c.execute(sql.SQL("""INSERT INTO {}(attempt_id,task_id,number,lease_token,worker_id,purpose)
-                VALUES(%s,%s,%s,%s,%s,'RECONCILIATION')""").format(self.t('attempts')),
-                (claim.attempt_id,claim.task_id,task['attempt_count']+1,claim.token,worker_id))
-            return claim,context,self._body(task,context)
+                decision = self._decision(c,task['task_id'],None,'EVIDENCE_EXHAUSTED')
+                job = None
+            else:
+                decision = None
+                context=self._context(c,task['task_id'])
+                if context is None:
+                    raise RuntimeError('Reconciliation context missing')
+                claim=Claim(task['task_id'],uuid4(),task['lease_token']+1,
+                            TaskDefinition(task['kind'],task['submission_key'],task['payload']))
+                c.execute(sql.SQL('''UPDATE {} SET lease_token=%s,active_attempt_id=%s,attempt_count=attempt_count+1,
+                    observation_count=observation_count+1,lease_until=clock_timestamp()+(%s * interval '1 second'),
+                    updated_at=clock_timestamp() WHERE task_id=%s''').format(self.t('tasks')),
+                    (claim.token,claim.attempt_id,lease_seconds,claim.task_id))
+                c.execute(sql.SQL("""INSERT INTO {}(attempt_id,task_id,number,lease_token,worker_id,purpose)
+                    VALUES(%s,%s,%s,%s,%s,'RECONCILIATION')""").format(self.t('attempts')),
+                    (claim.attempt_id,claim.task_id,task['attempt_count']+1,claim.token,worker_id))
+                job = claim,context,self._body(task,context)
+        if decision is not None:
+            emit_event('recovery_decision', **decision, state='NEEDS_REVIEW')
+        return job
 
     def complete_lookup(self,claim,context,body,reply):
         reason=lookup_evidence(reply,context,body)
@@ -238,8 +248,9 @@ class RecoveryRepository:
                 state,code='NEEDS_REVIEW',reason
             elif task['observation_count']>=5:
                 state,reason,code='NEEDS_REVIEW','EVIDENCE_EXHAUSTED','EVIDENCE_EXHAUSTED'
-            self._close(c,task,claim,state,outcome,code,reason,observation,result)
-            return state
+            decision = self._close(c,task,claim,state,outcome,code,reason,observation,result)
+        emit_event('recovery_decision', **decision)
+        return state
 
     def schedule_due(self,limit=100,*,due_before=None):
         bounded_int(limit,1,1000,'limit')
@@ -282,5 +293,7 @@ class RecoveryService:
         if job is None:
             return 'idle'
         claim,context,body=job
+        emit_event('reconciliation_claimed', task_id=claim.task_id,
+                   attempt_id=claim.attempt_id, worker_id=self.worker_id, lease_token=claim.token)
         reply=self.client_factory(context['provider_url']).lookup(context['experiment_id'],body['operation_id'])
         return self.repository.complete_lookup(claim,context,body,reply)

@@ -104,3 +104,10 @@
 - Verified Redis notification reconstruction, duplicate replay and worker interruption.
 - Migration 4 and restricted application grants applied successfully.
 - All eight Phase 8 integration tests and all 359 project tests passed on Ubuntu / WSL2.
+
+## Phase 9 — Observability and monitoring
+
+- Verified queue snapshots, active leases and recovery metrics.
+- Verified the dashboard and correlated task history in the browser.
+- Verified that committed recovery decisions match structured log IDs.
+- All 364 tests passed on Ubuntu / WSL2.

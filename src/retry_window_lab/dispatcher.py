@@ -1,5 +1,4 @@
 import argparse
-import json
 import math
 import time
 from dataclasses import asdict, dataclass
@@ -10,6 +9,7 @@ from redis import Redis
 from redis.exceptions import RedisError
 
 from retry_window_lab.config import redis_url
+from retry_window_lab.events import configure_event_output, emit_event
 from retry_window_lab.runtime_config import application_conninfo
 from retry_window_lab.db import DEFAULT_SCHEMA, connect, table, validate_schema
 
@@ -138,6 +138,7 @@ def main() -> None:
     if not math.isfinite(args.poll_seconds) or args.poll_seconds < 0.1:
         parser.error("poll-seconds must be finite and at least 0.1")
 
+    configure_event_output()
     with Redis.from_url(
         redis_url(), decode_responses=True,
         socket_connect_timeout=2, socket_timeout=2,
@@ -148,25 +149,23 @@ def main() -> None:
                 try:
                     report = dispatcher.replay_ready(args.batch_size)
                 except (psycopg.Error, RedisError) as exc:
-                    print(json.dumps({"event": "replay_error", "error_type": type(exc).__name__}), flush=True)
+                    emit_event("replay_error", error_type=type(exc).__name__)
                     raise SystemExit(1) from None
-                print(json.dumps({"event": "replay_ready", **asdict(report)}), flush=True)
+                emit_event("replay_ready", **asdict(report))
                 return
             while True:
                 try:
                     report = dispatcher.dispatch_once(args.batch_size)
-                    print(json.dumps({"event": "dispatch", **asdict(report)}), flush=True)
+                    emit_event("dispatch", **asdict(report))
                 except (psycopg.Error, RedisError) as exc:
-                    print(json.dumps({
-                        "event": "dispatch_error", "error_type": type(exc).__name__,
-                    }), flush=True)
+                    emit_event("dispatch_error", error_type=type(exc).__name__)
                     if args.once:
                         raise SystemExit(1) from None
                 if args.once:
                     break
                 time.sleep(args.poll_seconds)
         except KeyboardInterrupt:
-            print(json.dumps({"event": "dispatcher_stopped"}), flush=True)
+            emit_event("dispatcher_stopped")
 
 
 if __name__ == "__main__":

@@ -13,13 +13,12 @@ provider's idempotency protection expires.
 
 ## Current status
 
-Phase 8 adds queue backpressure, configurable worker concurrency,
-dedicated recovery capacity and Redis notification replay.
+Phase 9 adds a read-only queue dashboard, durable monitoring snapshots
+and structured logs that correlate task attempts with recovery decisions.
 
-All 359 tests passed on Ubuntu / WSL2. The concurrency demo observed four
-active execution slots, rebuilt six notifications and completed eight tasks.
-Two interrupted tasks entered NEEDS_REVIEW while the surviving worker
-continued processing.
+All 364 tests passed on Ubuntu / WSL2. The browser demo verified queue
+capacity, worker activity and a review task whose final decision was
+Evidence exhausted.
 
 ## Local setup
 
@@ -134,7 +133,7 @@ Browser interfaces:
 - Provider documentation: http://127.0.0.1:8001/docs
 
 Start the corresponding API service before opening its documentation.
-A dedicated monitoring dashboard is planned for the observability phase.
+The task API serves the queue dashboard at http://127.0.0.1:8000/dashboard.
 
 ## Queue capacity and Redis recovery
 
@@ -148,3 +147,13 @@ After Redis loss, rebuild ready notifications from PostgreSQL:
 
 See [Capacity and concurrency](docs/CAPACITY.md) for worker slots,
 admission limits and replay behavior.
+
+## Queue monitoring
+
+Start the task API and open http://127.0.0.1:8000/dashboard.
+With the provider running, launch the isolated dashboard demo:
+
+    python -m retry_window_lab.monitoring_demo
+
+See [Monitoring](docs/MONITORING.md) for metric definitions, task history
+and structured log correlation.

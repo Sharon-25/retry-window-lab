@@ -8,6 +8,7 @@ from psycopg.types.json import Jsonb
 
 from retry_window_lab.db import DEFAULT_SCHEMA, connect, table, validate_schema
 from retry_window_lab.domain import TaskDefinition, canonical_json
+from retry_window_lab.events import emit_event
 
 
 def bounded_int(value, minimum, maximum, name):
@@ -152,7 +153,7 @@ class OwnershipRepository:
 
     def expire(self, limit=100):
         bounded_int(limit, 1, 1000, 'limit')
-        count = 0
+        expired = []
         with connect(self.conninfo) as c, c.transaction():
             rows = c.execute(sql.SQL('''SELECT task_id FROM {} WHERE state IN ('RUNNING','RECONCILING')
                 AND active_attempt_id IS NOT NULL AND lease_until <= clock_timestamp() ORDER BY lease_until,task_id
@@ -162,8 +163,9 @@ class OwnershipRepository:
                                  .format(self._table('tasks')), (row['task_id'],)).fetchone()
                 if task['kind'] == 'reserve_inventory':
                     from retry_window_lab.recovery import RecoveryRepository
-                    if RecoveryRepository(self.conninfo, self.schema).expire_locked(c, task):
-                        count += 1
+                    decision = RecoveryRepository(self.conninfo, self.schema).expire_locked(c, task)
+                    if decision:
+                        expired.append(('recovery_decision', decision))
                         continue
                 # A lease expiration establishes uncertainty, never business failure.
                 cursor = c.execute(sql.SQL('''UPDATE {} SET outcome='UNKNOWN',error_code='LEASE_EXPIRED',
@@ -174,5 +176,10 @@ class OwnershipRepository:
                 c.execute(sql.SQL('''UPDATE {} SET state='NEEDS_REVIEW',lease_until=NULL,
                     active_attempt_id=NULL,updated_at=clock_timestamp() WHERE task_id=%s''')
                     .format(self._table('tasks')), (row['task_id'],))
-                count += 1
-        return count
+                expired.append(('lease_expired', {
+                    'task_id': task['task_id'], 'attempt_id': task['active_attempt_id'],
+                    'lease_token': task['lease_token'], 'state': 'NEEDS_REVIEW',
+                }))
+        for event, fields in expired:
+            emit_event(event, **fields)
+        return len(expired)

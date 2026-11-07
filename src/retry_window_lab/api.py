@@ -1,10 +1,11 @@
+from contextlib import asynccontextmanager
 import os
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
 import psycopg
 from fastapi import Depends, FastAPI, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from retry_window_lab.runtime_config import application_conninfo
@@ -12,6 +13,9 @@ from retry_window_lab.domain import TaskDefinition
 from retry_window_lab.local import SubmissionConflict
 from retry_window_lab.storage import TaskRepository
 from retry_window_lab.capacity import QueueAtCapacity
+from retry_window_lab.dashboard import DASHBOARD_HTML
+from retry_window_lab.events import configure_event_output, emit_event
+from retry_window_lab.monitoring import MonitoringRepository
 from retry_window_lab.recovery import ContextConflict,RecoveryRepository
 
 
@@ -30,7 +34,13 @@ class ContextBody(BaseModel):
 
 
 def create_app(repository: TaskRepository | None = None) -> FastAPI:
-    application = FastAPI(title="Retry Window Lab", version="0.1.0")
+    @asynccontextmanager
+    async def lifespan(_app):
+        if repository is None:
+            configure_event_output()
+        yield
+
+    application = FastAPI(title="Retry Window Lab", version="0.1.0", lifespan=lifespan)
 
     def get_repository() -> TaskRepository:
         return repository if repository is not None else TaskRepository(application_conninfo())
@@ -50,8 +60,10 @@ def create_app(repository: TaskRepository | None = None) -> FastAPI:
         try:
             result = store.submit(definition)
         except SubmissionConflict:
+            emit_event("submission_rejected", status=409, reason="submission_key_conflict")
             raise HTTPException(status_code=409, detail="submission_key_conflict") from None
         except QueueAtCapacity:
+            emit_event("submission_rejected", status=429, reason="queue_at_capacity")
             raise HTTPException(
                 status_code=429, detail="queue_at_capacity", headers={"Retry-After": "1"},
             ) from None
@@ -60,6 +72,9 @@ def create_app(repository: TaskRepository | None = None) -> FastAPI:
             raise HTTPException(
                 status_code=503, detail="database_unavailable", headers={"Retry-After": "1"},
             ) from None
+        emit_event("task_submitted" if result.created else "task_replayed",
+                   task_id=result.task.task_id, operation_id=result.task.operation_id,
+                   kind=definition.kind.value)
         return JSONResponse(
             status_code=202 if result.created else 200,
             headers={"Location": f"/tasks/{result.task.task_id}"},
@@ -92,6 +107,8 @@ def create_app(repository: TaskRepository | None = None) -> FastAPI:
             raise HTTPException(422,'invalid_provider_context') from None
         except psycopg.OperationalError:
             raise HTTPException(503,'database_unavailable') from None
+        if created:
+            emit_event('provider_context_bound', task_id=task_id, experiment_id=body.experiment_id)
         return {'created':created,'task_id':str(task_id)}
 
     @application.get('/tasks/{task_id}/recovery')
@@ -102,6 +119,30 @@ def create_app(repository: TaskRepository | None = None) -> FastAPI:
             raise HTTPException(404,'task_not_found') from None
         except psycopg.OperationalError:
             raise HTTPException(503,'database_unavailable') from None
+
+    @application.get("/", include_in_schema=False)
+    def root():
+        return RedirectResponse("/dashboard", status_code=307)
+
+    @application.get("/dashboard", include_in_schema=False)
+    def dashboard():
+        return HTMLResponse(DASHBOARD_HTML, headers={"Cache-Control": "no-store"})
+
+    @application.get("/monitoring/summary")
+    def monitoring_summary(store: Repository) -> dict:
+        try:
+            return MonitoringRepository(store._conninfo, store._schema).summary()
+        except (psycopg.OperationalError, psycopg.errors.QueryCanceled):
+            raise HTTPException(503, "database_unavailable") from None
+
+    @application.get("/monitoring/tasks/{task_id}")
+    def monitoring_task(task_id: UUID, store: Repository) -> dict:
+        try:
+            return MonitoringRepository(store._conninfo, store._schema).task_history(task_id)
+        except LookupError:
+            raise HTTPException(404, "task_not_found") from None
+        except (psycopg.OperationalError, psycopg.errors.QueryCanceled):
+            raise HTTPException(503, "database_unavailable") from None
 
     return application
 

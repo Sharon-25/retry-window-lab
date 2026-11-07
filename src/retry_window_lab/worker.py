@@ -3,10 +3,9 @@ import argparse
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
-import json
 import signal
 import socket
-from threading import Event, Lock, Thread
+from threading import Event, Thread
 from uuid import uuid4
 
 import psycopg
@@ -18,6 +17,7 @@ from retry_window_lab.runtime_config import application_conninfo
 from retry_window_lab.db import DEFAULT_SCHEMA, validate_schema
 from retry_window_lab.dispatcher import READY_STREAM
 from retry_window_lab.domain import canonical_json
+from retry_window_lab.events import configure_event_output, emit_event
 from retry_window_lab.local import KnownTaskFailure, checksum_handler
 from retry_window_lab.ownership import (
     Notification, OwnershipRepository, bounded_int, worker_identity,
@@ -25,12 +25,6 @@ from retry_window_lab.ownership import (
 
 GROUP = 'rwl:workers'
 MAX_CONCURRENCY = 8
-REPORT_LOCK = Lock()
-
-
-def emit(report):
-    with REPORT_LOCK:
-        print(json.dumps(report), flush=True)
 
 
 class LeaseHeartbeat:
@@ -144,31 +138,42 @@ class Worker:
             self.client.xack(self.stream, self.group, message_id)
             return {'event': 'worker', 'status': 'invalid_notification', 'message_id': message_id}
         status, claim = self.repository.claim(notification, self.worker_id, self.lease_seconds)
+        report = {
+            'event': 'worker', 'status': status, 'task_id': str(notification.task_id),
+            'notification_id': str(notification.event_id), 'delivery_generation': notification.generation,
+            'worker_id': self.worker_id,
+        }
         if status == 'unsupported':
-            return {'event': 'worker', 'status': status, 'task_id': str(notification.task_id)}
+            return report
+        if claim is not None:
+            report['attempt_id'] = str(claim.attempt_id)
+            report['lease_token'] = claim.token
+            emit_event('task_claimed', **{key: value for key, value in report.items()
+                                         if key not in ('event', 'status')})
         # A claim or durable representation is committed before acknowledgement.
         self.client.xack(self.stream, self.group, message_id)
         if claim is not None:
             status = (execute_reservation(self.repository, claim, self.lease_seconds)
                       if claim.definition.kind.value == 'reserve_inventory'
                       else execute_claim(self.repository, claim, self.lease_seconds))
-        return {'event': 'worker', 'status': status, 'task_id': str(notification.task_id)}
+        report['status'] = status
+        return report
 
 
 def recovery_pass(repository, recovery_repository, recovery_service):
     expired = repository.expire()
     if expired:
-        emit({'event': 'expired_attempts', 'count': expired})
+        emit_event('expired_attempts', count=expired)
     scheduled = recovery_repository.schedule_due()
     reconciled = recovery_service.run_once()
     if scheduled or reconciled != 'idle':
-        emit({'event': 'recovery', 'scheduled': scheduled, 'status': reconciled})
+        emit_event('recovery', scheduled=scheduled, status=reconciled)
 
 
 def report_tick(worker, *, once=False):
     report = worker.tick()
     if once or report['status'] != 'idle':
-        emit(report)
+        emit_event(report.pop('event'), **report)
     return report['status'] != 'idle'
 
 
@@ -188,7 +193,7 @@ async def run_slots(workers, recover):
                 if busy:
                     continue
             except (psycopg.Error, RedisError) as error:
-                emit({'event': 'worker_error', 'type': type(error).__name__})
+                emit_event('worker_error', type=type(error).__name__)
                 delay = 1
             try:
                 await asyncio.wait_for(stop.wait(), timeout=delay)
@@ -228,6 +233,7 @@ def main():
     except ValueError as error:
         parser.error(str(error))
 
+    configure_event_output()
     conninfo = application_conninfo()
     repository = OwnershipRepository(conninfo, schema)
     from retry_window_lab.recovery import RecoveryRepository, RecoveryService
@@ -252,12 +258,12 @@ def main():
             else:
                 asyncio.run(run_slots(workers, recover))
     except (psycopg.Error, RedisError) as error:
-        emit({'event': 'worker_error', 'type': type(error).__name__})
+        emit_event('worker_error', type=type(error).__name__)
         raise SystemExit(1) from None
     except KeyboardInterrupt:
         pass
     if not args.once:
-        emit({'event': 'worker_stopped'})
+        emit_event('worker_stopped')
 
 
 if __name__ == '__main__':
