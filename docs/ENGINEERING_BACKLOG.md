@@ -130,3 +130,11 @@
 - Observed: most one-slot latency accumulated before the worker claim.
 - Compared: one-slot throughput ranges overlapped at 100 and 500 ms
   dispatcher polling intervals.
+
+## Phase 12 — Release verification
+
+- Verified a fresh checkout on WSL2 with locked Python dependencies.
+- Passed all 369 tests using an isolated Docker Compose stack.
+- Reproduced the six recovery cases, capacity demo and 24 policy trials.
+- Completed all 12 measured tasks in the benchmark smoke run.
+- Verified cleanup of the temporary containers, volumes and network.

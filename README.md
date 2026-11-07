@@ -1,170 +1,109 @@
 # Retry Window Lab
 
-A Python distributed task queue for studying recovery when an external
-provider's idempotency protection expires.
+Retry Window Lab is a Python distributed task queue that explores a failure
+mode in external APIs. A provider can commit an operation, lose the response
+and later forget its idempotency key. A resend after that window can apply
+the same operation twice.
 
-## Stack
+The queue records task state, attempts and recovery decisions in PostgreSQL.
+A transactional outbox publishes work through Redis Streams. Workers use
+leased claims, and completion checks reject stale owners. For uncertain
+reservations, the recovery engine reconciles provider evidence, retries
+after a proven no-effect outcome or sends the task to `NEEDS_REVIEW`.
 
-- Python 3.12
-- PostgreSQL
-- Redis Streams
-- Ubuntu / WSL2
-- Docker Compose
+## Results
 
-## Current status
+In the [24-trial policy comparison](docs/POLICY_COMPARISON.md), fresh-key
+retries produced five extra reservations, same-key retries produced four,
+and evidence-based recovery produced zero. When lookup evidence ran out,
+the evidence policy left the task for review.
 
-Phase 11 adds a reproducible checksum queue benchmark. All 369 tests passed
-on Ubuntu / WSL2. Across three runs per configuration, increasing worker
-slots from one to four raised median throughput from 11.498 to 28.408
-tasks/s and lowered durable p95 latency from 7,045 to 993 ms.
-
-See [Performance baseline](docs/PERFORMANCE.md) for the workload,
-measurement definitions and dispatcher polling control.
+In the [WSL2 checksum benchmark](docs/PERFORMANCE.md), four worker slots
+completed a median **28.408 tasks/s** versus **11.498 tasks/s** with one slot.
+Durable p95 latency fell from **7,045 ms to 993 ms**. These figures describe
+the documented single-host workload. The full Phase 11 suite passed 369 tests.
 
 ## Local setup
 
-Keep Docker Desktop running with Ubuntu WSL integration enabled.
+Use Python 3.12, Docker Compose and Ubuntu or WSL2. On WSL2, start Docker
+Desktop and enable integration for your distribution.
 
-    python3 -m venv .venv
-    source .venv/bin/activate
-    python -m pip install -r requirements.lock
-    python -m pip install --no-deps -e .
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.lock
+python -m pip install --no-deps -e .
+test -f .env || cp .env.example .env
+```
 
-Create .env from .env.example and replace the placeholder password before
-first database initialization.
+Set a local bootstrap password in `.env` before starting PostgreSQL for
+the first time. Provisioning creates the schemas and separate runtime roles
+for the task queue and provider. Keep `.env` local.
 
-    docker compose up -d --wait --wait-timeout 120
-    python -m retry_window_lab.provision
-    python -m pytest -q
+```bash
+docker compose up -d --wait --wait-timeout 120
+python -m retry_window_lab.provision
+python -m pytest -q
+```
 
-## Useful commands
+Default ports are 55432 for PostgreSQL and 56379 for Redis. Docker Compose
+retains data in named volumes. `docker compose stop` stops the services and
+keeps the volumes.
 
-    docker compose ps
-    docker compose logs --tail=60 postgres redis
-    docker compose stop
-    docker compose up -d --wait
+## Run the queue
 
-PostgreSQL: localhost port 55432.
-Redis: localhost port 56379.
+With the virtual environment active, run each line in its own terminal.
 
-Named volumes retain local data. Database bootstrap credentials are for
-local development. Restricted application/provider roles will be introduced
-before provider isolation is implemented.
+```bash
+python -m uvicorn retry_window_lab.api:app --host 127.0.0.1 --port 8000
+python -m retry_window_lab.dispatcher
+python -m retry_window_lab.worker --worker-id worker-a --concurrency 2
+```
 
-## Reproducibility
+Submit a checksum from another terminal.
 
-requirements.lock records resolved Python dependencies.
-docs/INFRASTRUCTURE_IMAGES.txt records downloaded image references.
-Compose tags select a release series and may receive updates.
+```bash
+curl -sS -X POST http://127.0.0.1:8000/tasks \
+  -H 'Content-Type: application/json' \
+  -d '{"kind":"checksum","submission_key":"readme-checksum-1","payload":{"text":"abc"}}'
+```
 
-## Specification
+The response includes the task ID. Read its state and result at
+`GET /tasks/{task_id}` or open the [queue dashboard](http://127.0.0.1:8000/dashboard).
+Use the [task API docs](http://127.0.0.1:8000/docs) to inspect the routes.
 
-See docs/RETRY_WINDOW_LAB_SPEC.md.
+## Explore the failure cases
 
-## Local demonstration
+Start the provider simulator in a separate terminal.
 
-    python -m retry_window_lab.demo
+```bash
+python -m uvicorn retry_window_lab.provider_api:app --host 127.0.0.1 --port 8001
+```
 
-See docs/LOCAL_EXECUTION.md for behavior and limitations.
+Run the six [reservation recovery scenarios](docs/RECOVERY.md).
 
-## API and dispatcher
+```bash
+python -m retry_window_lab.recovery_demo
+```
 
-Start the API:
+Use the [release verification guide](docs/RELEASE.md) to reproduce the suite,
+recovery and capacity demos, comparison and benchmark smoke run in isolation.
 
-    python -m uvicorn retry_window_lab.api:app --host 127.0.0.1 --port 8000
+## Design and operations
 
-In a separate terminal, publish pending notifications:
+| Topic | Documentation |
+| --- | --- |
+| Contracts and failure model | [Specification](docs/RETRY_WINDOW_LAB_SPEC.md) |
+| Durable submission and Redis delivery | [Submission](docs/DURABLE_SUBMISSION.md), [API and delivery](docs/API_AND_DELIVERY.md) |
+| Leases and acknowledgements | [Workers](docs/WORKERS.md) |
+| Provider profiles and recovery | [Simulator](docs/PROVIDER_SIMULATOR.md), [Recovery](docs/RECOVERY.md) |
+| Admission, concurrency and Redis replay | [Capacity](docs/CAPACITY.md) |
+| Dashboard and correlated task history | [Monitoring](docs/MONITORING.md) |
+| Experiments and measurement | [Policy comparison](docs/POLICY_COMPARISON.md), [Performance](docs/PERFORMANCE.md) |
+| Verification history | [Engineering backlog](docs/ENGINEERING_BACKLOG.md) |
 
-    python -m retry_window_lab.dispatcher --once
-
-For continuous publication:
-
-    python -m retry_window_lab.dispatcher
-
-Interactive API documentation: http://localhost:8000/docs
-
-See docs/DURABLE_SUBMISSION.md and docs/API_AND_DELIVERY.md.
-
-## Workers
-
-Run each worker in a separate terminal:
-
-    python -m retry_window_lab.worker --worker-id worker-a
-    python -m retry_window_lab.worker --worker-id worker-b
-
-Publish accepted work using the dispatcher. Scan expired attempts manually:
-
-    python -m retry_window_lab.recover
-
-Expired attempts are recorded as uncertain; configured reservation tasks
-enter provider-aware recovery.
-See docs/WORKERS.md for ownership, acknowledgement and recovery behavior.
-
-## Provider simulator
-
-Provision storage and restricted runtime credentials before starting services:
-
-    python -m retry_window_lab.provision
-
-Start the provider:
-
-    python -m uvicorn retry_window_lab.provider_api:app --host 127.0.0.1 --port 8001
-
-Run the demonstration from another terminal:
-
-    python -m retry_window_lab.provider_demo
-
-The demonstration intentionally creates duplicate effects after protection
-expires. See docs/PROVIDER_SIMULATOR.md for contracts and limitations.
-
-## Reservation recovery
-
-With the provider running, execute the recovery demonstration:
-
-    python -m retry_window_lab.recovery_demo
-
-Bind provider context before executing a reservation task.
-The task API exposes provider-context binding and recovery status endpoints.
-
-See docs/RECOVERY.md for contracts, budgets, scheduling and limitations.
-
-Browser interfaces:
-
-- Task API documentation: http://127.0.0.1:8000/docs
-- Provider documentation: http://127.0.0.1:8001/docs
-
-Start the corresponding API service before opening its documentation.
-The task API serves the queue dashboard at http://127.0.0.1:8000/dashboard.
-
-## Queue capacity and Redis recovery
-
-Run the isolated concurrency demonstration:
-
-    python -m retry_window_lab.capacity_demo
-
-After Redis loss, rebuild ready notifications from PostgreSQL:
-
-    python -m retry_window_lab.dispatcher --replay-ready
-
-See [Capacity and concurrency](docs/CAPACITY.md) for worker slots,
-admission limits and replay behavior.
-
-## Queue monitoring
-
-Start the task API and open http://127.0.0.1:8000/dashboard.
-With the provider running, launch the isolated dashboard demo:
-
-    python -m retry_window_lab.monitoring_demo
-
-See [Monitoring](docs/MONITORING.md) for metric definitions, task history
-and structured log correlation.
-
-## Retry policy comparison
-
-With the provider simulator running, generate the comparison report:
-
-    report_dir=$(mktemp -d /tmp/rwl-comparison.XXXXXX)
-    python -m retry_window_lab.comparison --seed 42 --output "$report_dir/results"
-
-See [Retry policy comparison](docs/POLICY_COMPARISON.md) for the scenario
-matrix, measurement definitions and verified results.
+The lab is intended for local use. Its recovery behavior depends on the
+provider contracts modeled in the simulator. PostgreSQL storage is the
+durable source of task state, and Redis notification replay starts from that
+state. See the [release limitations](docs/RELEASE.md#scope-and-limitations)
+before applying the design to another environment.
