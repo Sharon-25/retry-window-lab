@@ -13,11 +13,13 @@ provider's idempotency protection expires.
 
 ## Current status
 
-Phase 10 compares three retry policies across eight provider fault scenarios.
-All 367 tests passed on Ubuntu / WSL2. In the 24-trial comparison, the
-evidence-based policy confirmed six single-reservation completions with zero
-extra reservations. The fresh-key and same-key policies produced five and
-four extra reservations, respectively.
+Phase 11 adds a reproducible checksum queue benchmark. All 369 tests passed
+on Ubuntu / WSL2. Across three runs per configuration, increasing worker
+slots from one to four raised median throughput from 11.498 to 28.408
+tasks/s and lowered durable p95 latency from 7,045 to 993 ms.
+
+See [Performance baseline](docs/PERFORMANCE.md) for the workload,
+measurement definitions and dispatcher polling control.
 
 ## Local setup
 

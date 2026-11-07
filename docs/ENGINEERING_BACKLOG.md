@@ -121,3 +121,12 @@
 - Verified: unavailable evidence left one operation in NEEDS_REVIEW.
 - Verified: a same-key resend sent at provider second 59 created an extra
   reservation when delivered at second 61.
+
+## Phase 11 — Performance baseline
+
+- Verified: all 369 tests passed on Ubuntu / WSL2.
+- Verified: each benchmark configuration completed 360 measured tasks.
+- Measured: four worker slots delivered 2.47 times the one-slot throughput.
+- Observed: most one-slot latency accumulated before the worker claim.
+- Compared: one-slot throughput ranges overlapped at 100 and 500 ms
+  dispatcher polling intervals.
